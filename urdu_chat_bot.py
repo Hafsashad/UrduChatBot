@@ -6,7 +6,7 @@ import sentencepiece as spm
 
 def download_model_from_release():
     """Download model file from GitHub Releases"""
-    model_url = "https://github.com/Hafsashad/UrduChatBot/releases/download/v1.0.0/best_span_corruption_model.pth"
+    model_url = "https://github.com/Hafsashad/UrduChatBot/releases/download/mytag/best_span_corruption_model.pth"
     model_filename = "best_span_corruption_model.pth"
     
     if not os.path.exists(model_filename):
@@ -202,3 +202,4 @@ def generate_response(model, tokenizer, input_text, device):
 
 if __name__ == "__main__":
     main()
+
