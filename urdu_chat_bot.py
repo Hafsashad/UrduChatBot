@@ -4,9 +4,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 import sentencepiece as spm
-import random
 import os
-from typing import List, Tuple
+import requests
+import time
+import hashlib
 
 # Set page config
 st.set_page_config(
@@ -15,11 +16,12 @@ st.set_page_config(
     layout="wide"
 )
 
-# Device configuration
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+# Force CPU for better compatibility and performance
+device = torch.device('cpu')
+torch.set_grad_enabled(False)
 
 # ============================================================================
-# MODEL ARCHITECTURE (Same as your Colab code)
+# MODEL ARCHITECTURE
 # ============================================================================
 
 class PositionalEncoding(nn.Module):
@@ -188,119 +190,187 @@ class SpanCorruptionTransformer(nn.Module):
 # MODEL LOADING AND GENERATION
 # ============================================================================
 
-import requests
-
-@st.cache_resource
-def load_model_and_tokenizer():
-    """Load the trained model and tokenizer"""
+@st.cache_resource(show_spinner=False)
+def load_tokenizer():
+    """Load tokenizer with caching"""
     try:
-        # Load tokenizer
         tokenizer = spm.SentencePieceProcessor()
-        model_paths = [
+        tokenizer_paths = [
             "unigram_urdu_spm.model",
             "./unigram_urdu_spm.model",
             "models/unigram_urdu_spm.model"
         ]
         
-        tokenizer_loaded = False
-        for model_path in model_paths:
-            if os.path.exists(model_path):
-                tokenizer.load(model_path)
-                tokenizer_loaded = True
-                st.success(f"✅ Tokenizer loaded from {model_path}")
-                break
+        for path in tokenizer_paths:
+            if os.path.exists(path):
+                tokenizer.load(path)
+                st.success(f"✅ Tokenizer loaded from {path}")
+                return tokenizer
+        
+        st.error("❌ Tokenizer file not found. Please ensure 'unigram_urdu_spm.model' is in your repository.")
+        return None
+    except Exception as e:
+        st.error(f"❌ Tokenizer loading error: {str(e)}")
+        return None
 
-        if not tokenizer_loaded:
-            st.error("❌ Tokenizer file missing — add 'unigram_urdu_spm.model' to your repo.")
-            return None, None
+def verify_file_hash(file_path, expected_hash):
+    """Verify file integrity using SHA256 hash"""
+    try:
+        sha256_hash = hashlib.sha256()
+        with open(file_path, "rb") as f:
+            for byte_block in iter(lambda: f.read(4096), b""):
+                sha256_hash.update(byte_block)
+        file_hash = sha256_hash.hexdigest()
+        return file_hash == expected_hash
+    except Exception as e:
+        st.error(f"❌ Hash verification error: {str(e)}")
+        return False
 
-        # --- ADD THIS SECTION FOR DOWNLOADING MODEL ---
-        github_release_url = (
-            "https://github.com/HafsaShad/urdu-chatbot/releases/download/v1.0/best_span_corruption_model.pth"
-        )
+def download_model_with_progress(url, file_path, expected_hash):
+    """Download model file with progress bar and hash verification"""
+    try:
+        response = requests.get(url, stream=True)
+        response.raise_for_status()
+        
+        total_size = int(response.headers.get('content-length', 0))
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        with open(file_path, 'wb') as f:
+            downloaded = 0
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if total_size > 0:
+                        progress = downloaded / total_size
+                        progress_bar.progress(min(progress, 1.0))
+                        status_text.text(f"Downloading: {downloaded/(1024*1024):.1f}MB / {total_size/(1024*1024):.1f}MB")
+        
+        progress_bar.empty()
+        status_text.empty()
+        
+        # Verify file hash
+        st.info("🔍 Verifying file integrity...")
+        if verify_file_hash(file_path, expected_hash):
+            st.success("✅ File downloaded and verified successfully!")
+            return True
+        else:
+            st.error("❌ File verification failed! The downloaded file may be corrupted.")
+            os.remove(file_path)  # Remove corrupted file
+            return False
+            
+    except Exception as e:
+        st.error(f"❌ Download error: {str(e)}")
+        return False
 
-        checkpoint_path = "best_span_corruption_model.pth"
-        if not os.path.exists(checkpoint_path):
-            st.warning("⬇️ Downloading model from GitHub release...")
-            r = requests.get(github_release_url)
-            if r.status_code == 200:
-                with open(checkpoint_path, "wb") as f:
-                    f.write(r.content)
-                st.success("✅ Model downloaded successfully!")
+@st.cache_resource(show_spinner=False)
+def load_model(_tokenizer):
+    """Load model with caching and automatic download from GitHub release"""
+    if _tokenizer is None:
+        return None
+        
+    try:
+        # GitHub release URL and expected hash
+        GITHUB_RELEASE_URL = "https://github.com/HafsaShad/urdu-chatbot/releases/download/v1.0/best_span_corruption_model.pth"
+        EXPECTED_HASH = "f318b68c180ea9eef88bd1d1bc7b10adf06ebec24bf06173214feaafc5ce0f35"
+        MODEL_PATH = "best_span_corruption_model.pth"
+        
+        # Check if model file exists and is valid
+        if os.path.exists(MODEL_PATH):
+            st.info("🔍 Found existing model file, verifying integrity...")
+            if verify_file_hash(MODEL_PATH, EXPECTED_HASH):
+                st.success("✅ Model file verified successfully!")
             else:
-                st.error(f"❌ Failed to download model. HTTP {r.status_code}")
-                return None, None
-        # ------------------------------------------------
+                st.warning("⚠️ Model file corrupted or modified. Re-downloading...")
+                os.remove(MODEL_PATH)
+                if not download_model_with_progress(GITHUB_RELEASE_URL, MODEL_PATH, EXPECTED_HASH):
+                    return None
+        else:
+            # Download model
+            st.warning("📥 Model file not found. Downloading from GitHub release...")
+            if not download_model_with_progress(GITHUB_RELEASE_URL, MODEL_PATH, EXPECTED_HASH):
+                return None
 
-        # Load checkpoint
-        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-        config = checkpoint['config']
+        # Load model checkpoint
+        with st.spinner("🔄 Loading model weights..."):
+            checkpoint = torch.load(MODEL_PATH, map_location=device, weights_only=False)
+            config = checkpoint['config']
 
-        # Create model
-        model = SpanCorruptionTransformer(
-            src_vocab_size=tokenizer.get_piece_size(),
-            tgt_vocab_size=tokenizer.get_piece_size(),
-            d_model=config['d_model'],
-            num_layers=config['num_layers'],
-            num_heads=config['num_heads'],
-            d_ff=config['d_ff'],
-            dropout=config['dropout'],
-            max_len=config['max_len']
-        ).to(device)
+            # Create model
+            model = SpanCorruptionTransformer(
+                src_vocab_size=_tokenizer.get_piece_size(),
+                tgt_vocab_size=_tokenizer.get_piece_size(),
+                d_model=config['d_model'],
+                num_layers=config['num_layers'],
+                num_heads=config['num_heads'],
+                d_ff=config['d_ff'],
+                dropout=config['dropout'],
+                max_len=config['max_len']
+            ).to(device)
 
-        model.load_state_dict(checkpoint['model_state_dict'])
+            model.load_state_dict(checkpoint['model_state_dict'])
+            model.eval()
+            
+        st.success("✅ Model loaded successfully!")
+        return model
+        
+    except Exception as e:
+        st.error(f"❌ Model loading error: {str(e)}")
+        return None
+
+def generate_response(model, tokenizer, input_text, max_length=50, temperature=0.8):
+    """Generate response for given input text"""
+    if model is None or tokenizer is None:
+        return "Model not loaded properly."
+    
+    try:
         model.eval()
         
-        st.success("✅ Model loaded successfully!")
-        return model, tokenizer
-
+        # Tokenize input
+        input_tokens = tokenizer.encode(input_text)
+        if not input_tokens:
+            return "Unable to process input text."
+            
+        src = torch.tensor([input_tokens]).to(device)
+        src_mask = model.make_src_mask(src)
+        
+        # Start with SOS token
+        tgt = torch.tensor([[tokenizer.bos_id()]]).to(device)
+        
+        for _ in range(max_length - 1):
+            tgt_mask = model.make_tgt_mask(tgt)
+            
+            with torch.no_grad():
+                encoder_output = model.encoder(src, src_mask)
+                decoder_output = model.decoder(tgt, encoder_output, src_mask, tgt_mask)
+                output = model.fc_out(decoder_output)
+                
+                # Get last token predictions
+                next_token_logits = output[:, -1, :] / temperature
+                probabilities = F.softmax(next_token_logits, dim=-1)
+                
+                # Sample next token
+                next_token = torch.multinomial(probabilities, 1)
+            
+            # Append to sequence
+            tgt = torch.cat([tgt, next_token], dim=1)
+            
+            # Stop if EOS token generated
+            if next_token.item() == tokenizer.eos_id():
+                break
+        
+        # Decode response
+        response_tokens = tgt[0].tolist()
+        response = tokenizer.decode(response_tokens)
+        
+        # Clean up response
+        response = response.replace('<s>', '').replace('</s>', '').strip()
+        
+        return response if response else "No response generated."
+        
     except Exception as e:
-        st.error(f"❌ Error loading model: {str(e)}")
-        return None, None
-
-
-def generate_response(model, tokenizer, input_text, max_length=100, temperature=0.8):
-    """Generate response for given input text"""
-    model.eval()
-    
-    # Tokenize input
-    input_tokens = tokenizer.encode(input_text)
-    src = torch.tensor([input_tokens]).to(device)
-    src_mask = model.make_src_mask(src)
-    
-    # Start with SOS token
-    tgt = torch.tensor([[tokenizer.bos_id()]]).to(device)
-    
-    for _ in range(max_length - 1):
-        tgt_mask = model.make_tgt_mask(tgt)
-        
-        with torch.no_grad():
-            encoder_output = model.encoder(src, src_mask)
-            decoder_output = model.decoder(tgt, encoder_output, src_mask, tgt_mask)
-            output = model.fc_out(decoder_output)
-            
-            # Get last token predictions
-            next_token_logits = output[:, -1, :] / temperature
-            probabilities = F.softmax(next_token_logits, dim=-1)
-            
-            # Sample next token
-            next_token = torch.multinomial(probabilities, 1)
-        
-        # Append to sequence
-        tgt = torch.cat([tgt, next_token], dim=1)
-        
-        # Stop if EOS token generated
-        if next_token.item() == tokenizer.eos_id():
-            break
-    
-    # Decode response
-    response_tokens = tgt[0].tolist()
-    response = tokenizer.decode(response_tokens)
-    
-    # Clean up response
-    response = response.replace('<s>', '').replace('</s>', '').strip()
-    
-    return response
+        return f"Generation error: {str(e)}"
 
 # ============================================================================
 # STREAMLIT UI
@@ -312,6 +382,8 @@ def main():
     This chatbot uses a Transformer model trained with **Span Corruption** technique 
     to generate responses in Urdu. The model was trained on Urdu text data and can 
     engage in conversations, answer questions, and generate contextual responses.
+    
+    **Note:** The model weights (~100MB) will be automatically downloaded from GitHub releases on first run.
     """)
     
     # Sidebar
@@ -323,34 +395,52 @@ def main():
     - Vocabulary: 6,000 tokens
     - Language: Urdu
     
+    **File Verification:**
+    - SHA256: `f318b68c180ea9eef88bd1d1bc7b10adf06ebec24bf06173214feaafc5ce0f35`
+    - Downloaded files are automatically verified
+    
     **How to use:**
     1. Type your message in Urdu
     2. Click 'Generate Response'
     3. The model will generate a response
-    
-    **Example inputs:**
-    - تم کہاں رہتے ہو
-    - آپ کیسے ہیں؟
-    - آج موسم بہت خوبصورت ہے
     """)
     
-    # Initialize session state for chat history
+    # Initialize session state
     if 'chat_history' not in st.session_state:
         st.session_state.chat_history = []
-    
-    # Load model
-    with st.spinner("Loading model and tokenizer..."):
-        model, tokenizer = load_model_and_tokenizer()
-    
-    if model is None or tokenizer is None:
-        st.error("""
-        Unable to load the model. Please ensure you have:
-        - `best_span_corruption_model.pth` (trained model weights)
-        - `unigram_urdu_spm.model` (sentencepiece tokenizer)
-        
-        in your repository root or in a 'models/' folder.
-        """)
-        return
+    if 'resources_loaded' not in st.session_state:
+        st.session_state.resources_loaded = False
+    if 'model' not in st.session_state:
+        st.session_state.model = None
+    if 'tokenizer' not in st.session_state:
+        st.session_state.tokenizer = None
+
+    # Load resources only once
+    if not st.session_state.resources_loaded:
+        with st.status("🚀 Loading chatbot resources...", expanded=True) as status:
+            # Load tokenizer
+            status.write("📖 Loading tokenizer...")
+            tokenizer = load_tokenizer()
+            
+            if tokenizer is None:
+                st.error("Failed to load tokenizer. Please ensure 'unigram_urdu_spm.model' is in your repository.")
+                return
+            
+            # Load model
+            status.write("🧠 Loading model (this may take a minute)...")
+            model = load_model(tokenizer)
+            
+            if model is None:
+                st.error("Failed to load model. Please check your internet connection and try again.")
+                return
+            
+            # Store in session state
+            st.session_state.tokenizer = tokenizer
+            st.session_state.model = model
+            st.session_state.resources_loaded = True
+            
+            status.write("✅ All resources loaded successfully!")
+            status.update(label="✅ Chatbot ready!", state="complete", expanded=False)
     
     # Chat interface
     st.subheader("💬 Chat with the Urdu Bot")
@@ -371,31 +461,37 @@ def main():
             min_value=0.1,
             max_value=1.0,
             value=0.8,
-            help="Higher values make output more random, lower values more deterministic"
+            help="Higher values make output more random"
         )
     
     # Generate button
-    if st.button("Generate Response", type="primary"):
-        if user_input.strip():
-            with st.spinner("Generating response..."):
-                try:
-                    response = generate_response(
-                        model, 
-                        tokenizer, 
-                        user_input, 
-                        temperature=temperature
-                    )
-                    
-                    # Add to chat history
-                    st.session_state.chat_history.append({
-                        "user": user_input,
-                        "bot": response
-                    })
-                    
-                except Exception as e:
-                    st.error(f"Error generating response: {str(e)}")
-        else:
-            st.warning("Please enter a message first.")
+    col1, col2, col3 = st.columns([2, 1, 1])
+    
+    with col1:
+        generate_clicked = st.button("Generate Response", type="primary", use_container_width=True)
+    
+    with col2:
+        if st.button("Clear Chat", use_container_width=True):
+            st.session_state.chat_history = []
+            st.rerun()
+    
+    if generate_clicked and user_input.strip():
+        with st.spinner("🤔 Generating response..."):
+            start_time = time.time()
+            response = generate_response(
+                st.session_state.model, 
+                st.session_state.tokenizer, 
+                user_input, 
+                temperature=temperature
+            )
+            end_time = time.time()
+            
+            # Add to chat history
+            st.session_state.chat_history.append({
+                "user": user_input,
+                "bot": response,
+                "time": f"{end_time - start_time:.2f}s"
+            })
     
     # Display chat history
     st.subheader("📝 Conversation History")
@@ -416,9 +512,10 @@ def main():
                 with col2:
                     st.success(chat["bot"])
                 
+                st.caption(f"Generated in {chat['time']}")
                 st.markdown("---")
     else:
-        st.info("No conversation yet. Start by typing a message above!")
+        st.info("💡 No conversation yet. Start by typing a message above!")
     
     # Quick examples
     st.subheader("💡 Quick Examples")
@@ -435,19 +532,28 @@ def main():
     
     for i, example in enumerate(examples):
         with example_cols[i % 3]:
-            if st.button(example, key=f"example_{i}"):
+            if st.button(example, key=f"example_{i}", use_container_width=True):
                 st.session_state.user_input = example
                 st.rerun()
     
     # Model info
     with st.expander("📊 Model Information"):
-        st.write(f"**Device:** {device}")
-        st.write(f"**Vocabulary Size:** {tokenizer.get_piece_size()}")
-        st.write("**Special Tokens:**")
-        st.write(f"  - BOS: {tokenizer.bos_id()}")
-        st.write(f"  - EOS: {tokenizer.eos_id()}")
-        st.write(f"  - PAD: {tokenizer.pad_id()}")
+        if st.session_state.tokenizer:
+            st.write(f"**Device:** {device}")
+            st.write(f"**Vocabulary Size:** {st.session_state.tokenizer.get_piece_size()}")
+            st.write("**Special Tokens:**")
+            st.write(f"  - BOS: {st.session_state.tokenizer.bos_id()}")
+            st.write(f"  - EOS: {st.session_state.tokenizer.eos_id()}")
+            st.write(f"  - PAD: {st.session_state.tokenizer.pad_id()}")
+            st.write(f"  - UNK: {st.session_state.tokenizer.unk_id()}")
+        
+        st.write(f"**Chat History Length:** {len(st.session_state.chat_history)}")
+        
+        # Show file info
+        if os.path.exists("best_span_corruption_model.pth"):
+            file_size = os.path.getsize("best_span_corruption_model.pth") / (1024 * 1024)
+            st.write(f"**Model File Size:** {file_size:.1f} MB")
+            st.write(f"**Model File Verified:** ✅")
 
 if __name__ == "__main__":
     main()
-
