@@ -3,8 +3,4 @@ sentencepiece>=0.2.0
 streamlit>=1.50.0
 numpy>=1.26.4
 requests>=2.25.1
-sacrebleu
-rouge-score
-pandas
-scikit-learn
-tqdm
+
