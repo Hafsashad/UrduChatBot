@@ -188,14 +188,14 @@ class SpanCorruptionTransformer(nn.Module):
 # MODEL LOADING AND GENERATION
 # ============================================================================
 
+import requests
+
 @st.cache_resource
 def load_model_and_tokenizer():
     """Load the trained model and tokenizer"""
     try:
         # Load tokenizer
         tokenizer = spm.SentencePieceProcessor()
-        
-        # Try different possible paths for the model files
         model_paths = [
             "unigram_urdu_spm.model",
             "./unigram_urdu_spm.model",
@@ -209,33 +209,33 @@ def load_model_and_tokenizer():
                 tokenizer_loaded = True
                 st.success(f"✅ Tokenizer loaded from {model_path}")
                 break
-        
+
         if not tokenizer_loaded:
-            st.error("❌ Tokenizer model file not found. Please make sure 'unigram_urdu_spm.model' is in your repository.")
+            st.error("❌ Tokenizer file missing — add 'unigram_urdu_spm.model' to your repo.")
             return None, None
 
-        # Load model checkpoint
-        checkpoint_paths = [
-            "best_span_corruption_model.pth",
-            "./best_span_corruption_model.pth", 
-            "models/best_span_corruption_model.pth"
-        ]
-        
-        checkpoint_loaded = False
-        checkpoint = None
-        for checkpoint_path in checkpoint_paths:
-            if os.path.exists(checkpoint_path):
-                checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-                checkpoint_loaded = True
-                st.success(f"✅ Model checkpoint loaded from {checkpoint_path}")
-                break
-        
-        if not checkpoint_loaded:
-            st.error("❌ Model checkpoint file not found. Please make sure 'best_span_corruption_model.pth' is in your repository.")
-            return None, None
+        # --- ADD THIS SECTION FOR DOWNLOADING MODEL ---
+        github_release_url = (
+            "https://github.com/HafsaShad/urdu-chatbot/releases/download/v1.0/best_span_corruption_model.pth"
+        )
 
+        checkpoint_path = "best_span_corruption_model.pth"
+        if not os.path.exists(checkpoint_path):
+            st.warning("⬇️ Downloading model from GitHub release...")
+            r = requests.get(github_release_url)
+            if r.status_code == 200:
+                with open(checkpoint_path, "wb") as f:
+                    f.write(r.content)
+                st.success("✅ Model downloaded successfully!")
+            else:
+                st.error(f"❌ Failed to download model. HTTP {r.status_code}")
+                return None, None
+        # ------------------------------------------------
+
+        # Load checkpoint
+        checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
         config = checkpoint['config']
-        
+
         # Create model
         model = SpanCorruptionTransformer(
             src_vocab_size=tokenizer.get_piece_size(),
@@ -248,16 +248,16 @@ def load_model_and_tokenizer():
             max_len=config['max_len']
         ).to(device)
 
-        # Load weights
         model.load_state_dict(checkpoint['model_state_dict'])
         model.eval()
         
         st.success("✅ Model loaded successfully!")
         return model, tokenizer
-        
+
     except Exception as e:
         st.error(f"❌ Error loading model: {str(e)}")
         return None, None
+
 
 def generate_response(model, tokenizer, input_text, max_length=100, temperature=0.8):
     """Generate response for given input text"""
@@ -450,3 +450,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
