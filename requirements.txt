@@ -1,0 +1,4 @@
+torch==2.0.1
+sentencepiece==0.1.99
+streamlit==1.28.0
+numpy==1.24.3
