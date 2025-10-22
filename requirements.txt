@@ -2,3 +2,4 @@ torch==2.9.0
 sentencepiece==0.1.99
 streamlit==1.50.0
 numpy==1.26.4
+requests>=2.25.1
