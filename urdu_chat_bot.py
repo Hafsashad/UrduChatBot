@@ -356,8 +356,7 @@ def load_model_and_tokenizer():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
     # GitHub release URL for the model
-    MODEL_URL = "https://github.com/HafsaShad/urdu-chatbot/releases/download/v1.0.0/best_span_corruption_model.pth"
-  
+    MODEL_URL = "https://github.com/Hafsashad/UrduChatBot/releases/download/v1.0.0/best_span_corruption_model.pth"
     MODEL_PATH = "best_span_corruption_model.pth"
     
     # Download model if not exists
@@ -655,5 +654,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
