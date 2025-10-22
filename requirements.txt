@@ -1,5 +1,10 @@
-torch==2.0.0
-sentencepiece==0.1.97
-streamlit==1.28.0
-numpy==1.23.5
-requests==2.28.2
+torch>=2.9.0
+sentencepiece>=0.2.0
+streamlit>=1.50.0
+numpy>=1.26.4
+requests>=2.25.1
+sacrebleu
+rouge-score
+pandas
+scikit-learn
+tqdm
